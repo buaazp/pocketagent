@@ -17,6 +17,10 @@ placeholders) is identical either way. Slash commands skip the @mention
 gating that applies to plain messages, since invoking one is already an
 explicit, unambiguous action.
 
+send_files uploads files an agent asked to share via a ```send-file``` block
+(see core/file_requests.py) as real attachments, batched up to Discord's
+10-per-message cap.
+
 make_channel_ctx (see core/scheduled_tasks.py) resolves a bare channel_id to
 a discord.abc.Messageable with no inbound message to anchor it to -- reply()/
 send() handle that case by sending directly on it instead of looking for a
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import discord
@@ -41,6 +46,22 @@ logger = logging.getLogger(__name__)
 
 MAX_DISCORD_LEN = 1900
 MAX_QUOTED_LEN = 500
+MAX_FILES_PER_MESSAGE = 10
+
+
+def _chat_name(guild: discord.Guild | None, channel: object, user: object) -> str:
+    """Pick the name a channel's workspace folder is based on.
+
+    Guild channels include the server name, since channel names repeat across
+    servers (every server has a "general"). A DM channel has no name of its
+    own, so it's named after the other participant's username.
+    """
+
+    channel_name = getattr(channel, "name", "") or ""
+    if guild is None:
+        return channel_name or getattr(user, "name", "") or ""
+    guild_name = getattr(guild, "name", "") or ""
+    return f"{guild_name}-{channel_name}" if guild_name and channel_name else channel_name
 
 
 async def _extract_quoted(message: discord.Message) -> str:
@@ -84,6 +105,9 @@ async def _classify_attachments(
 
 class DiscordPlatform(Platform):
     name = "discord"
+    supports_files = True
+    # Discord's default per-file upload limit for bots in unboosted servers.
+    max_upload_bytes = 10 * 1024 * 1024
 
     def __init__(
         self,
@@ -161,7 +185,6 @@ class DiscordPlatform(Platform):
 
         await interaction.response.defer(ephemeral=True)
 
-        channel_name = getattr(interaction.channel, "name", "") or ""
         msg = Message(
             session_key=f"discord:{interaction.channel_id}:{interaction.user.id}",
             channel_key=str(interaction.channel_id),
@@ -169,7 +192,7 @@ class DiscordPlatform(Platform):
             channel_id=str(interaction.channel_id),
             user_id=str(interaction.user.id),
             user_name=str(interaction.user.display_name),
-            chat_name=channel_name,
+            chat_name=_chat_name(interaction.guild, interaction.channel, interaction.user),
             content=f"/{name} {args}".rstrip(),
             reply_ctx=interaction,
         )
@@ -204,7 +227,6 @@ class DiscordPlatform(Platform):
             return
 
         images, files = await _classify_attachments(message.attachments)
-        channel_name = getattr(message.channel, "name", "") or ""
         quoted_content = await _extract_quoted(message)
 
         msg = Message(
@@ -214,7 +236,7 @@ class DiscordPlatform(Platform):
             channel_id=str(message.channel.id),
             user_id=str(message.author.id),
             user_name=str(message.author.display_name),
-            chat_name=channel_name,
+            chat_name=_chat_name(message.guild, message.channel, message.author),
             content=content,
             images=images,
             files=files,
@@ -239,6 +261,14 @@ class DiscordPlatform(Platform):
         channel = self._channel_for(reply_ctx)
         for chunk in split_message(content, MAX_DISCORD_LEN):
             await channel.send(chunk)
+
+    async def send_files(self, reply_ctx, paths: list[Path]) -> None:
+        # Interactions have already been acked by reply(); like their text
+        # results, attachments go to the channel as standalone messages.
+        channel = reply_ctx.channel if isinstance(reply_ctx, discord.Interaction) else self._channel_for(reply_ctx)
+        for start in range(0, len(paths), MAX_FILES_PER_MESSAGE):
+            batch = paths[start : start + MAX_FILES_PER_MESSAGE]
+            await channel.send(files=[discord.File(path, filename=path.name) for path in batch])
 
     @staticmethod
     def _channel_for(reply_ctx) -> discord.abc.Messageable:

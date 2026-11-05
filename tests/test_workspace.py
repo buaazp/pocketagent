@@ -13,6 +13,36 @@ def test_sanitize_folder_name_empty_falls_back():
     assert sanitize_folder_name("   ") == "channel"
 
 
+def test_sanitize_folder_name_keeps_unicode_letters():
+    assert sanitize_folder_name("我的服务器-general") == "我的服务器-general"
+
+
+def test_sanitize_folder_name_distinguishes_chinese_names():
+    assert sanitize_folder_name("开发") != sanitize_folder_name("测试")
+
+
+def test_sanitize_folder_name_neutralizes_path_traversal():
+    assert sanitize_folder_name("../../etc/passwd") == "etc-passwd"
+
+
+def test_sanitize_folder_name_is_idempotent():
+    once = sanitize_folder_name("~/我的 server!")
+    assert sanitize_folder_name(once) == once
+
+
+def test_sanitize_folder_name_caps_length_in_bytes_on_a_character_boundary():
+    safe = sanitize_folder_name("服" * 200)
+    assert safe == "服" * 66
+    assert len(safe.encode("utf-8")) <= 200
+
+
+def test_resolve_dir_creates_longest_cjk_name_with_collision_suffix(tmp_path):
+    manager = WorkspaceManager(tmp_path / "base")
+    name = "服" * 100 + "-" + "道" * 100
+    assert manager.resolve_dir("111", name).is_dir()
+    assert manager.resolve_dir("222", name).name.endswith("-2")
+
+
 def test_resolve_dir_creates_directory(tmp_path):
     manager = WorkspaceManager(tmp_path / "base")
     path = manager.resolve_dir("123", "general")

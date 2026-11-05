@@ -14,15 +14,21 @@ import re
 import threading
 from pathlib import Path
 
-_UNSAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
+# \w is Unicode-aware, so non-Latin channel names (e.g. Chinese) stay readable
+# instead of all collapsing to the "channel" fallback.
+_UNSAFE_CHARS_RE = re.compile(r"[^\w.-]+")
+# Filesystems cap a name at 255 *bytes*, and a CJK character takes 3 in UTF-8.
+# Stay under that with room for a "-N" collision suffix.
+_MAX_FOLDER_NAME_BYTES = 200
 
 
 def sanitize_folder_name(name: str) -> str:
     """Reduce an arbitrary channel name/id to a safe directory name."""
 
     name = name.strip()
-    safe = _UNSAFE_CHARS_RE.sub("-", name).strip("-._")
-    return safe or "channel"
+    safe = _UNSAFE_CHARS_RE.sub("-", name)
+    safe = safe.encode("utf-8")[:_MAX_FOLDER_NAME_BYTES].decode("utf-8", errors="ignore")
+    return safe.strip("-._") or "channel"
 
 
 class WorkspaceManager:

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .workspace import WorkspaceManager
+from .workspace import WorkspaceManager, sanitize_folder_name
 
 
 @dataclass
@@ -60,9 +60,12 @@ class Router:
     def resolve(self, channel_id: str, channel_name: str = "") -> ResolvedRoute:
         override = self.channels.get(channel_id)
         agent_name = (override.agent if override else None) or self.default_agent
-        preferred_workspace_name = (
-            override.workspace if override else None
-        ) or channel_name or channel_id
+        # Only a configured override may name an absolute path. A display name
+        # is chosen by whoever runs the server/group, so it's sanitized here --
+        # otherwise one called "/etc/foo" or "~/foo" would be taken for a path.
+        preferred_workspace_name = (override.workspace if override else None) or (
+            sanitize_folder_name(channel_name) if channel_name else channel_id
+        )
         work_dir = self.workspace.resolve_dir(channel_id, preferred_workspace_name)
         show_footer = (
             override.show_footer if override and override.show_footer is not None else self.show_footer

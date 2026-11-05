@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, AsyncContextManager, Awaitable, Callable
 
 from .types import Message
@@ -21,6 +22,14 @@ class Platform(ABC):
 
     name: str
 
+    # Whether send_files() is implemented. Engine only teaches the agent the
+    # ```send-file``` convention (core/file_requests.py) on platforms that
+    # set this, and refuses such blocks elsewhere.
+    supports_files: bool = False
+    # Largest single file send_files() accepts; checked by Engine before
+    # calling it so an oversized file gets a clear note instead of an API error.
+    max_upload_bytes: int = 10 * 1024 * 1024
+
     @abstractmethod
     async def start(self, handler: MessageHandler) -> None:
         """Connect to the platform and begin dispatching messages to handler."""
@@ -32,6 +41,14 @@ class Platform(ABC):
     @abstractmethod
     async def send(self, reply_ctx: Any, content: str) -> None:
         """Send a new (non-reply) message into the same channel as reply_ctx."""
+
+    async def send_files(self, reply_ctx: Any, paths: list[Path]) -> None:
+        """Send local files as attachments into the same channel as reply_ctx.
+
+        Default: unsupported. Platforms that can upload attachments set
+        supports_files = True and override this.
+        """
+        raise NotImplementedError(f"{self.name}: sending files not supported")
 
     @abstractmethod
     async def stop(self) -> None:

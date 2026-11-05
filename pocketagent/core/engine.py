@@ -10,6 +10,7 @@ from typing import Callable
 
 from .agent import Agent
 from .commands import CommandRegistry, CustomCommand
+from .file_requests import FileRequestError, extract_file_requests, resolve_outbound_file, send_file_instructions
 from .platform import Platform
 from .utils import format_duration, parse_relative_duration
 from .router import ResolvedRoute, Router
@@ -202,13 +203,12 @@ class Engine:
             await self._queue_for_retry(route.agent_name, platform, msg, timer.run_at)
             return
 
-        platform_system_prompt = route.platform_system_prompt
+        prompt_sections = [route.platform_system_prompt]
         if self._scheduled_tasks_dir is not None:
-            platform_system_prompt = (
-                f"{platform_system_prompt}\n\n{SCHEDULE_TASK_INSTRUCTIONS}"
-                if platform_system_prompt
-                else SCHEDULE_TASK_INSTRUCTIONS
-            )
+            prompt_sections.append(SCHEDULE_TASK_INSTRUCTIONS)
+        if platform.supports_files:
+            prompt_sections.append(send_file_instructions(route.work_dir))
+        platform_system_prompt = "\n\n".join(s for s in prompt_sections if s)
 
         async with platform.typing(msg.reply_ctx):
             session = await self.session_store.get_or_create(
@@ -242,11 +242,14 @@ class Engine:
                         return
                     final_text = "".join(text_parts) or event.content
                     final_text = self._apply_schedule_requests(final_text, msg)
+                    final_text, file_paths = self._apply_file_requests(final_text, platform, route)
                     footer = _format_footer(event) if route.show_footer else ""
                     if footer:
                         final_text = f"{final_text}\n\n{footer}" if final_text else footer
                     if final_text:
                         await platform.reply(msg.reply_ctx, final_text)
+                    if file_paths:
+                        await self._send_files(platform, msg, file_paths)
                     self._maybe_mark_rate_limited_from_usage(route.agent_name, event)
                     return
 
@@ -275,6 +278,48 @@ class Engine:
 
         note_text = "\n".join(notes)
         return f"{cleaned}\n\n{note_text}" if cleaned else note_text
+
+    def _apply_file_requests(
+        self, text: str, platform: Platform, route: ResolvedRoute
+    ) -> tuple[str, list[Path]]:
+        """Strip any ```send-file``` blocks out of `text` and resolve their paths.
+
+        Paths are resolved against route.work_dir and must stay inside it
+        (see core/file_requests.resolve_outbound_file). Returns the cleaned
+        text -- with a note appended for each block that can't be sent --
+        and the files that can.
+        """
+
+        cleaned, requests = extract_file_requests(text)
+        if not requests:
+            return text, []
+
+        notes: list[str] = []
+        paths: list[Path] = []
+        for request in requests:
+            if isinstance(request, FileRequestError):
+                notes.append(f"Couldn't send that file: {request.detail}")
+                continue
+            if not platform.supports_files:
+                notes.append(f"Couldn't send '{request.path}': this platform doesn't support attachments.")
+                continue
+            try:
+                paths.append(resolve_outbound_file(route.work_dir, request.path, platform.max_upload_bytes))
+            except ValueError as exc:
+                notes.append(f"Couldn't send that file: {exc}")
+
+        if notes:
+            note_text = "\n".join(notes)
+            cleaned = f"{cleaned}\n\n{note_text}" if cleaned else note_text
+        return cleaned, paths
+
+    async def _send_files(self, platform: Platform, msg: Message, paths: list[Path]) -> None:
+        try:
+            await platform.send_files(msg.reply_ctx, paths)
+        except Exception:
+            logger.exception("failed to send %d file(s) session_key=%s", len(paths), msg.session_key)
+            names = ", ".join(p.name for p in paths)
+            await platform.send(msg.reply_ctx, f"Couldn't upload {names}.")
 
     def _process_add_requests(self, requests: list, msg: Message) -> list[str]:
         notes: list[str] = []

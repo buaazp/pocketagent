@@ -1012,3 +1012,107 @@ async def test_user_defined_model_command_wins_over_builtin(tmp_path):
     )
 
     assert engine.commands.resolve("model").prompt == "what model are you?"
+
+
+class _FilePlatform(_FakePlatform):
+    supports_files = True
+
+    def __init__(self):
+        super().__init__()
+        self.sent_files: list[list] = []
+
+    async def send_files(self, reply_ctx, paths) -> None:
+        self.sent_files.append(list(paths))
+
+
+def _make_file_engine(tmp_path, reply_text: str) -> Engine:
+    class _FileAgentSession(_FakeAgentSession):
+        async def events(self) -> AsyncIterator[Event]:
+            yield Event(type=EventType.RESULT, content=reply_text, done=True)
+
+    class _FileAgent(_FakeAgent):
+        async def start_session(self, session_id, work_dir, platform_system_prompt="", show_footer=False, model=""):
+            self.last_platform_system_prompt = platform_system_prompt
+            return _FileAgentSession()
+
+    workspace = WorkspaceManager(tmp_path / "workspace")
+    router = Router(default_agent="fake", workspace=workspace)
+    engine = Engine(
+        agents={"fake": _FileAgent()},
+        routers={"fake": router},
+        session_store=SessionStore(tmp_path / "sessions.json"),
+        commands=CommandRegistry(),
+    )
+    return engine
+
+
+def _workspace_dir(engine: Engine):
+    return engine.routers["fake"].resolve("1", "").work_dir
+
+
+@pytest.mark.asyncio
+async def test_send_file_block_sends_text_then_attachment(tmp_path):
+    engine = _make_file_engine(tmp_path, 'Here you go.\n\n```send-file\npath = "pic.png"\n```')
+    work_dir = _workspace_dir(engine)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "pic.png").write_bytes(b"png")
+    platform = _FilePlatform()
+
+    await engine.on_message(platform, _make_message())
+
+    assert platform.replies == ["Here you go."]
+    assert [[p.name for p in batch] for batch in platform.sent_files] == [["pic.png"]]
+
+
+@pytest.mark.asyncio
+async def test_send_file_block_outside_workspace_is_refused(tmp_path):
+    (tmp_path / "secret.txt").write_text("s")
+    engine = _make_file_engine(tmp_path, 'Sure.\n\n```send-file\npath = "../../secret.txt"\n```')
+    _workspace_dir(engine).mkdir(parents=True, exist_ok=True)
+    platform = _FilePlatform()
+
+    await engine.on_message(platform, _make_message())
+
+    assert platform.sent_files == []
+    assert "outside the workspace" in platform.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_send_file_block_on_platform_without_file_support(tmp_path):
+    engine = _make_file_engine(tmp_path, '```send-file\npath = "pic.png"\n```')
+    platform = _FakePlatform()
+
+    await engine.on_message(platform, _make_message())
+
+    assert len(platform.replies) == 1
+    assert "doesn't support attachments" in platform.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_send_file_instructions_only_for_file_capable_platforms(tmp_path):
+    engine = _make_file_engine(tmp_path, "ok")
+    agent = engine.agents["fake"]
+
+    await engine.on_message(_FilePlatform(), _make_message())
+    assert "send-file" in agent.last_platform_system_prompt
+
+    await engine.session_store.clear_matching(lambda _: True)
+    await engine.on_message(_FakePlatform(), _make_message())
+    assert "send-file" not in agent.last_platform_system_prompt
+
+
+@pytest.mark.asyncio
+async def test_failed_upload_reports_back(tmp_path):
+    class _BrokenFilePlatform(_FilePlatform):
+        async def send_files(self, reply_ctx, paths) -> None:
+            raise RuntimeError("boom")
+
+    engine = _make_file_engine(tmp_path, '```send-file\npath = "pic.png"\n```')
+    work_dir = _workspace_dir(engine)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "pic.png").write_bytes(b"png")
+    platform = _BrokenFilePlatform()
+
+    await engine.on_message(platform, _make_message())
+
+    assert platform.replies == ["Couldn't upload pic.png."]

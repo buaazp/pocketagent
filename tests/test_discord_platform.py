@@ -32,15 +32,17 @@ def test_csv_contains_rejects_non_member():
 
 
 class _FakeUser:
-    def __init__(self, id: int, bot: bool = False, display_name: str = ""):
+    def __init__(self, id: int, bot: bool = False, display_name: str = "", name: str = ""):
         self.id = id
+        self.name = name
         self.bot = bot
         self.display_name = display_name or str(id)
 
 
 class _FakeGuild:
-    def __init__(self, id: int):
+    def __init__(self, id: int, name: str = ""):
         self.id = id
+        self.name = name
 
 
 class _FakeChannel:
@@ -95,6 +97,54 @@ async def test_default_requires_mention_in_guild():
     )
     assert len(received) == 1
     assert received[0].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_chat_name_includes_server_name_in_guild():
+    platform = DiscordPlatform(token="t", group_reply_all_guilds="*")
+    received = _wire(platform)
+
+    await platform._on_discord_message(
+        _FakeMessage(
+            "hello",
+            _FakeUser(id=2),
+            _FakeChannel(id=10, name="general"),
+            guild=_FakeGuild(id=555, name="Work"),
+        )
+    )
+
+    assert received[0].chat_name == "Work-general"
+
+
+@pytest.mark.asyncio
+async def test_chat_name_is_username_for_dms():
+    platform = DiscordPlatform(token="t")
+    received = _wire(platform)
+
+    await platform._on_discord_message(
+        _FakeMessage(
+            "hello", _FakeUser(id=2, name="alice", display_name="Alice A"), _FakeChannel(id=10), guild=None
+        )
+    )
+
+    assert received[0].chat_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_chat_name_ignores_username_in_guild_channels():
+    platform = DiscordPlatform(token="t", group_reply_all_guilds="*")
+    received = _wire(platform)
+
+    await platform._on_discord_message(
+        _FakeMessage(
+            "hello",
+            _FakeUser(id=2, name="alice"),
+            _FakeChannel(id=10),
+            guild=_FakeGuild(id=555, name="Work"),
+        )
+    )
+
+    assert received[0].chat_name == ""
 
 
 @pytest.mark.asyncio
@@ -181,8 +231,9 @@ async def test_group_reply_all_guilds_star_matches_all_guilds():
 # --- Slash commands -------------------------------------------------------------
 
 
-def _fake_interaction(user_id: int, channel_id: int = 10, channel_name: str = "general"):
+def _fake_interaction(user_id: int, channel_id: int = 10, channel_name: str = "general", guild=None):
     interaction = Mock(spec=discord.Interaction)
+    interaction.guild = guild
     interaction.user = _FakeUser(id=user_id)
     interaction.channel_id = channel_id
     interaction.channel = _FakeChannel(id=channel_id, name=channel_name)
@@ -235,6 +286,43 @@ async def test_slash_command_dispatches_through_handler():
     assert msg.content == "/english hola mundo"
     assert msg.session_key == "discord:10:2"
     assert msg.reply_ctx is interaction
+
+
+@pytest.mark.asyncio
+async def test_slash_command_chat_name_includes_server_name():
+    registry = CommandRegistry()
+    registry.add(CustomCommand(name="english", prompt="Translate: {{1*}}"))
+    platform = DiscordPlatform(token="t", commands=registry)
+    received = []
+
+    async def handler(plat, msg):
+        received.append(msg)
+
+    platform._handler = handler
+    interaction = _fake_interaction(user_id=2, guild=_FakeGuild(id=555, name="Work"))
+
+    await platform._on_slash_command(interaction, "english", "hola")
+
+    assert received[0].chat_name == "Work-general"
+
+
+@pytest.mark.asyncio
+async def test_slash_command_chat_name_is_username_in_dms():
+    registry = CommandRegistry()
+    registry.add(CustomCommand(name="english", prompt="Translate: {{1*}}"))
+    platform = DiscordPlatform(token="t", commands=registry)
+    received = []
+
+    async def handler(plat, msg):
+        received.append(msg)
+
+    platform._handler = handler
+    interaction = _fake_interaction(user_id=2, channel_name="")
+    interaction.user = _FakeUser(id=2, name="alice")
+
+    await platform._on_slash_command(interaction, "english", "hola")
+
+    assert received[0].chat_name == "alice"
 
 
 @pytest.mark.asyncio
@@ -381,3 +469,50 @@ async def test_typing_falls_back_to_noop_without_channel():
 
     async with platform.typing(reply_ctx):
         pass  # must not raise
+
+
+# --- send_files ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_files_uploads_to_message_channel(tmp_path):
+    platform = DiscordPlatform(token="t")
+    path = tmp_path / "a.png"
+    path.write_bytes(b"png")
+    channel = _FakeChannel(id=10)
+    message = _FakeMessage("hi", _FakeUser(id=2), channel)
+
+    await platform.send_files(message, [path])
+
+    channel.send.assert_awaited_once()
+    files = channel.send.await_args.kwargs["files"]
+    assert [f.filename for f in files] == ["a.png"]
+
+
+@pytest.mark.asyncio
+async def test_send_files_batches_ten_per_message(tmp_path):
+    platform = DiscordPlatform(token="t")
+    paths = []
+    for i in range(12):
+        path = tmp_path / f"{i}.png"
+        path.write_bytes(b"png")
+        paths.append(path)
+    channel = _FakeChannel(id=10)
+
+    await platform.send_files(channel, paths)
+
+    assert channel.send.await_count == 2
+    assert len(channel.send.await_args_list[0].kwargs["files"]) == 10
+    assert len(channel.send.await_args_list[1].kwargs["files"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_send_files_for_interaction_goes_to_its_channel(tmp_path):
+    platform = DiscordPlatform(token="t")
+    path = tmp_path / "a.png"
+    path.write_bytes(b"png")
+    interaction = _fake_interaction(user_id=2)
+
+    await platform.send_files(interaction, [path])
+
+    interaction.channel.send.assert_awaited_once()

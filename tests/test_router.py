@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pocketagent.core.router import ChannelOverride, Router
 from pocketagent.core.workspace import WorkspaceManager
 
@@ -76,3 +78,22 @@ def test_resolve_show_footer_channel_override_wins(tmp_path):
     )
     assert router.resolve("111", "general").show_footer is True
     assert router.resolve("222", "general").show_footer is False
+
+
+
+@pytest.mark.parametrize("display_name", ["/tmp/evil-general", "~/evil-general", "~evil-general"])
+def test_display_name_is_never_treated_as_a_path(tmp_path, display_name):
+    base = tmp_path / "base"
+    router = Router(default_agent="claude_code", workspace=WorkspaceManager(base))
+    route = router.resolve("123", display_name)
+    assert route.work_dir.parent == base
+
+
+def test_override_workspace_may_still_be_an_absolute_path(tmp_path):
+    target = tmp_path / "elsewhere"
+    router = Router(
+        default_agent="claude_code",
+        workspace=WorkspaceManager(tmp_path / "base"),
+        channels={"123": ChannelOverride(workspace=str(target))},
+    )
+    assert router.resolve("123", "general").work_dir == target

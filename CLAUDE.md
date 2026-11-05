@@ -91,6 +91,12 @@ Supporting pieces in `core/`:
   `FileAttachment` dataclasses passed between platforms, the engine, and agents.
 - **`attachments.py`**: `save_files(work_dir, files)` writes attachments into
   `work_dir/.pocketagent/attachments`, used by both agent backends.
+- **`file_requests.py`**: the outbound direction -- an agent includes a
+  ```` ```send-file ```` block (`path = "..."`) in its reply; `Engine._apply_file_requests`
+  strips it, resolves the path against the channel's `work_dir` (refusing anything that
+  lands outside it after following symlinks, or exceeds `Platform.max_upload_bytes`), sends
+  the text, then calls `Platform.send_files`. `send_file_instructions(route.work_dir)` is appended to the
+  system prompt only when `platform.supports_files` is true (currently Discord only).
 
 `config.py` loads `pocketagent.toml` (via `tomllib`) into `AppConfig`/`PlatformConfig` and
 wires up the concrete `Agent`/`Platform` instances and `Engine` (`build_app`). New agent or
@@ -219,7 +225,12 @@ so two dirs sharing a basename never collide.
 
 DMs are always dispatched; guild channel messages only dispatch when the bot is
 `@`-mentioned (the mention is stripped before handing the message to the engine). No
-threads/buttons yet — plain text messaging only.
+threads/buttons yet — plain text messaging, plus outbound file attachments via
+`send_files` (batched 10 per message, Discord's cap).
+
+A guild channel's `chat_name` is `{server}-{channel}`, since channel names like `general`
+repeat across servers; a DM has no name of its own, so it uses the user's username. It only
+seeds the workspace folder on first binding, so channels already bound keep their folder.
 
 Configured custom commands are also registered as real Discord slash commands (via
 `discord.app_commands.CommandTree`), each with a single free-text `args` option.
