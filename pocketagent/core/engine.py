@@ -75,6 +75,7 @@ class Engine:
     _LIST_SCHEDULED_COMMAND = "scheduled"
     _UNSCHEDULE_COMMAND = "unschedule"
     _MODEL_COMMAND = "model"
+    _NEW_SESSION_COMMAND = "new"
 
     def __init__(
         self,
@@ -138,7 +139,7 @@ class Engine:
             await self._handle_locked(platform, msg, route)
 
     def _register_builtin_commands(self) -> None:
-        """Register /model, /scheduled and /unschedule as real CommandRegistry entries.
+        """Register /new, /model, /scheduled and /unschedule as real CommandRegistry entries.
 
         Unlike the hardcoded-in-Engine approach this replaced, going through
         CommandRegistry means platforms that list `commands.all()` to
@@ -148,8 +149,17 @@ class Engine:
 
         The two scheduling commands are additionally gated on
         scheduled_tasks_dir, since without it there's no file to act on;
-        /model has no such dependency and is always registered.
+        /new and /model have no such dependency and are always registered.
         """
+
+        if self.commands.resolve(self._NEW_SESSION_COMMAND) is None:
+            self.commands.add(
+                CustomCommand(
+                    name=self._NEW_SESSION_COMMAND,
+                    builtin="new_session",
+                    description="Start a new conversation (the current one is not continued)",
+                )
+            )
 
         if self.commands.resolve(self._MODEL_COMMAND) is None:
             self.commands.add(
@@ -436,10 +446,30 @@ class Engine:
                 return
             await platform.reply(msg.reply_ctx, self._remove_scheduled_task_text(msg, args[0]))
             return
+        if cmd.builtin == "new_session":
+            await platform.reply(msg.reply_ctx, await self._new_session_text(msg))
+            return
         if cmd.builtin == "set_model":
             await platform.reply(msg.reply_ctx, await self._set_model_text(msg, args_text, route))
             return
         raise AssertionError(f"unknown builtin command {cmd.builtin!r}")
+
+    async def _new_session_text(self, msg: Message) -> str:
+        """Handle `/new`: drop this conversation's live agent session and its
+        resume id, so the next message starts a brand-new agent session --
+        what the daily reset does, for just this session_key and on demand.
+
+        The /model override is deliberately kept: it lives in
+        model_overrides.json, separate from resume ids, precisely so a chosen
+        model outlives a conversation reset.
+        """
+
+        if not self.session_store.has_session(msg.session_key):
+            return "There's no conversation to reset yet -- your next message starts a new one."
+        await self.session_store.clear_matching(lambda key: key == msg.session_key)
+        model = self.session_store.get_model(msg.session_key)
+        kept = f" (still using `{model}`)" if model else ""
+        return f"Started a new conversation{kept} -- the previous one is no longer continued."
 
     async def _set_model_text(self, msg: Message, args_text: str, route: ResolvedRoute) -> str:
         """Handle `/model`, `/model <name>` and `/model reset`.
