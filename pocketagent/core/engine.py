@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from .bilingual import clean_reply
 from .agent import Agent
 from .commands import CommandRegistry, CustomCommand
 from .file_requests import FileRequestError, extract_file_requests, resolve_outbound_file, send_file_instructions
@@ -240,7 +241,7 @@ class Engine:
                             return
                         await platform.reply(msg.reply_ctx, f"Error: {error_text}")
                         return
-                    final_text = "".join(text_parts) or event.content
+                    final_text = clean_reply("".join(text_parts) or event.content)
                     final_text = self._apply_schedule_requests(final_text, msg)
                     final_text, file_paths = self._apply_file_requests(final_text, platform, route)
                     footer = _format_footer(event) if route.show_footer else ""
