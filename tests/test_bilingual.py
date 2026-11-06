@@ -37,6 +37,44 @@ def test_code_fences_and_tables_are_left_alone():
     assert clean_reply(text) == text
 
 
+G, E = "\x1b[90m", "\x1b[39m"  # bbilingual's "gray" style
+
+
+def test_colored_translation_full_of_code_and_urls_becomes_quote():
+    # bbilingual colors only the plain pieces; code spans stay uncolored. Most
+    # letters here are Latin, but the colors still mark it as the translation.
+    text = (
+        "The fix is committed as `0c9fa0d`, pushed to `buaazp:telegram-formatting-and-fixes`,"
+        " and PR #1 is updated: https://github.com/bydsky/pocketagent/pull/1\n"
+        f"{G}该修复已提交为{E}`0c9fa0d`{G}，推送到{E}`buaazp:telegram-formatting-and-fixes`"
+        f"{G}，并且PR #1已更新：https://github.com/bydsky/pocketagent/pull/1{E}"
+    )
+    assert clean_reply(text).split("\n")[1] == (
+        "> 该修复已提交为`0c9fa0d`，推送到`buaazp:telegram-formatting-and-fixes`"
+        "，并且PR #1已更新：https://github.com/bydsky/pocketagent/pull/1"
+    )
+
+
+def test_colored_translation_of_bullet_quoting_english_title_becomes_quote():
+    text = (
+        '- **Commit:** "Keep each assistant message\'s bilingual translation in its own quote."'
+        " It contains only the `engine.py` change and its test.\n"
+        f"  **{G}Commit{E}**{G}：\"Keep each assistant message's bilingual translation in its own"
+        f" quote。\"它只包含{E}`engine.py`{G}的改动及其测试。{E}"
+    )
+    assert clean_reply(text).split("\n")[1] == (
+        "> **Commit**：\"Keep each assistant message's bilingual translation in its own"
+        " quote。\"它只包含`engine.py`的改动及其测试。"
+    )
+
+
+def test_uncolored_translation_ignores_code_and_urls_when_counting():
+    text = "Pushed `0c9fa0d` to `telegram-formatting-and-fixes`.\n已将`0c9fa0d`推送到`telegram-formatting-and-fixes`。"
+    assert clean_reply(text) == (
+        "Pushed `0c9fa0d` to `telegram-formatting-and-fixes`.\n> 已将`0c9fa0d`推送到`telegram-formatting-and-fixes`。"
+    )
+
+
 def test_translation_next_to_real_quote_stays_separate():
     text = "Done.\n完成。\n> [!NOTE]\n> hi"
     assert clean_reply(text) == "Done.\n> 完成。\n\n> [!NOTE]\n> hi"

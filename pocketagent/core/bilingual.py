@@ -10,9 +10,10 @@ Chat apps show those escape codes as junk.
 markdown quote (``> 译文``). Every platform here shows ``>`` as a quote, either
 natively (Discord, Slack) or via the Telegram HTML converter.
 
-A line counts as a translation when bbilingual colored it (it arrived wrapped
-in ANSI codes), or when it's mostly CJK and comes right after an English prose
-line. Headings, which bbilingual writes as ``# English / 中文``, get split into
+A line counts as a translation when bbilingual colored it (any ANSI code in
+it, even if code spans and URLs make it mostly Latin), or, without colors, when
+it's mostly CJK outside code spans and URLs and comes right after an English
+prose line. Headings, which bbilingual writes as ``# English / 中文``, get split into
 the heading plus a quote line. Code fences and table rows are left alone; a
 translated table stays a separate table under the original.
 """
@@ -36,6 +37,17 @@ def _mostly_cjk(line: str) -> bool:
     # Same rule bbilingual itself uses for "already in the target script".
     cjk = len(_CJK_RE.findall(line))
     return cjk > 0 and cjk * 3 >= len(re.findall(r"[A-Za-z]", line))
+
+
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _mostly_cjk_prose(line: str) -> bool:
+    # Like _mostly_cjk, but code spans and URLs don't count: a translation such as
+    # "已提交为 `0c9fa0d`，PR 已更新：https://github.com/..." is Chinese prose even
+    # though most of its letters are Latin.
+    return _mostly_cjk(_URL_RE.sub("", _CODE_SPAN_RE.sub("", line)))
 
 
 def _is_english_prose(line: str) -> bool:
@@ -82,10 +94,12 @@ def clean_reply(text: str) -> str:
             prev_clean = ""
             continue
 
+        # Only bbilingual puts ANSI colors in the agent's text, so a colored line is a
+        # translation however much Latin it holds (code spans, URLs, a quoted English
+        # title). It colors just the plain-text pieces, leaving code spans and markers.
         colored = raw != line
         is_translation = bool(stripped) and not stripped.startswith("|") and (
-            (colored and _mostly_cjk(stripped))
-            or (_mostly_cjk(stripped) and _is_english_prose(prev_clean))
+            colored or (_mostly_cjk_prose(stripped) and _is_english_prose(prev_clean))
         )
         if is_translation:
             translated.add(len(out))
