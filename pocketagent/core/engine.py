@@ -251,7 +251,12 @@ class Engine:
                             return
                         await platform.reply(msg.reply_ctx, f"Error: {error_text}")
                         return
-                    final_text = clean_reply("".join(text_parts) or event.content)
+                    # Each TEXT event is a whole assistant message (the text before or
+                    # between tool calls), and none ends with a newline. Gluing them with
+                    # "" put one message's last line (often a bilingual translation) and
+                    # the next message's first line on a single mixed line, which then
+                    # was quoted wrongly or not at all.
+                    final_text = clean_reply("\n\n".join(text_parts) or event.content)
                     final_text = self._apply_schedule_requests(final_text, msg)
                     final_text, file_paths = self._apply_file_requests(final_text, platform, route)
                     footer = _format_footer(event) if route.show_footer else ""

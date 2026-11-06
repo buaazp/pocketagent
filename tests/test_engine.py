@@ -698,6 +698,42 @@ async def test_on_message_appends_footer_when_result_has_usage_data(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_text_events_between_tool_calls_stay_separate_and_each_translation_is_quoted(tmp_path):
+    # Real case: Claude Code sent one text block, ran a tool, sent another. bbilingual
+    # appended a translation line to each block. Joining them with "" glued "进行。"
+    # onto "It works.", so that translation lost its quote.
+    blocks = [
+        "I'll test the site on that port.\n\x1b[90m我会在那个端口上测试该站点。\x1b[39m",
+        "It works. I'll also check the owner account.\n\x1b[90m有效。我还会检查 owner 账户。\x1b[39m",
+        "You can now use it remotely.\n\x1b[90m现在你可以远程使用它了。\x1b[39m",
+    ]
+
+    class _MultiTextSession(_FakeAgentSession):
+        async def events(self) -> AsyncIterator[Event]:
+            for block in blocks:
+                yield Event(type=EventType.TEXT, content=block)
+            yield Event(type=EventType.RESULT, content="", done=True)
+
+    class _MultiTextAgent(_FakeAgent):
+        async def start_session(
+            self, session_id, work_dir, platform_system_prompt="", show_footer=False, model=""
+        ) -> AgentSession:
+            return _MultiTextSession()
+
+    engine, _ = _make_engine(tmp_path, show_footer=False)
+    engine.agents["fake"] = _MultiTextAgent()
+    platform = _FakePlatform()
+
+    await engine.on_message(platform, _make_message())
+
+    assert platform.replies == [
+        "I'll test the site on that port.\n> 我会在那个端口上测试该站点。\n\n"
+        "It works. I'll also check the owner account.\n> 有效。我还会检查 owner 账户。\n\n"
+        "You can now use it remotely.\n> 现在你可以远程使用它了。"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_clear_all_sessions_closes_live_sessions_and_forgets_resume_ids(tmp_path):
     engine, _ = _make_engine(tmp_path)
     platform = _FakePlatform()
